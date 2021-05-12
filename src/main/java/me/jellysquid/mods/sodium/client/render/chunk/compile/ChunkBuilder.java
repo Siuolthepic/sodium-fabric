@@ -1,6 +1,6 @@
 package me.jellysquid.mods.sodium.client.render.chunk.compile;
 
-import me.jellysquid.mods.sodium.client.gl.attribute.GlVertexFormat;
+import me.jellysquid.mods.sodium.client.model.vertex.type.ChunkVertexType;
 import me.jellysquid.mods.sodium.client.render.chunk.ChunkGraphicsState;
 import me.jellysquid.mods.sodium.client.render.chunk.ChunkRenderBackend;
 import me.jellysquid.mods.sodium.client.render.chunk.ChunkRenderContainer;
@@ -55,11 +55,11 @@ public class ChunkBuilder<T extends ChunkGraphicsState> {
     private BlockRenderPassManager renderPassManager;
 
     private final int limitThreads;
-    private final GlVertexFormat<?> format;
+    private final ChunkVertexType vertexType;
     private final ChunkRenderBackend<T> backend;
 
-    public ChunkBuilder(GlVertexFormat<?> format, ChunkRenderBackend<T> backend) {
-        this.format = format;
+    public ChunkBuilder(ChunkVertexType vertexType, ChunkRenderBackend<T> backend) {
+        this.vertexType = vertexType;
         this.backend = backend;
         this.limitThreads = getOptimalThreadCount();
         this.pool = new ObjectPool<>(this.getSchedulingBudget(), WorldSlice::new);
@@ -89,7 +89,7 @@ public class ChunkBuilder<T extends ChunkGraphicsState> {
         MinecraftClient client = MinecraftClient.getInstance();
 
         for (int i = 0; i < this.limitThreads; i++) {
-            ChunkBuildBuffers buffers = new ChunkBuildBuffers(this.format, this.renderPassManager);
+            ChunkBuildBuffers buffers = new ChunkBuildBuffers(this.vertexType, this.renderPassManager);
             ChunkRenderContext pipeline = new ChunkRenderContext(client);
 
             WorkerRunnable worker = new WorkerRunnable(buffers, pipeline);
@@ -343,11 +343,19 @@ public class ChunkBuilder<T extends ChunkGraphicsState> {
                     continue;
                 }
 
-                // Perform the build task with this worker's local resources and obtain the result
-                ChunkBuildResult<T> result = job.task.performBuild(this.pipeline, this.bufferCache, job);
+                ChunkBuildResult<T> result;
 
-                // After the result has been obtained, it's safe to release any resources attached to the task
-                job.task.releaseResources();
+                try {
+                    // Perform the build task with this worker's local resources and obtain the result
+                    result = job.task.performBuild(this.pipeline, this.bufferCache, job);
+                } catch (Exception e) {
+                    // Propagate any exception from chunk building
+                    job.future.completeExceptionally(e);
+                    continue;
+                } finally {
+                    // After the task has executed, it's safe to release any resources attached to the task
+                    job.task.releaseResources();
+                }
 
                 // The result can be null if the task is cancelled
                 if (result != null) {
